@@ -10,7 +10,7 @@ internal sealed class MainForm : Form
     private readonly AppSettings settings;
     private readonly SearchService search;
     private readonly ComboBox category = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220 };
-    private readonly FlowLayoutPanel targetList = new() { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true };
+    private readonly FlowLayoutPanel targetList = new() { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = true, AutoScroll = true };
     private readonly List<TextBox> targets = [];
     private readonly DataGridView grid = new() { Dock = DockStyle.Fill, ReadOnly = true, AllowUserToAddRows = false,
         AllowUserToDeleteRows = false, AutoGenerateColumns = false, RowHeadersVisible = false, MultiSelect = false,
@@ -20,7 +20,7 @@ internal sealed class MainForm : Form
         Text = "先添加文件夹，再点击“更新索引”。\n索引完成后，输入目标即可搜索。" };
     private readonly TextBox preview = new() { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true,
         ScrollBars = ScrollBars.Both, WordWrap = false, BackColor = SystemColors.Window };
-    private readonly Label previewTitle = new() { AutoSize = true, Text = "选中结果查看整行内容", Margin = new Padding(0, 5, 0, 8) };
+    private readonly Label previewTitle = new() { AutoSize = true, Text = "选中结果查看命中内容", Margin = new Padding(0, 5, 0, 8) };
     private readonly Button settingsButton = MakeButton("目录和设置");
     private readonly Button indexButton = MakeButton("更新索引");
     private readonly Button pauseButton = MakeButton("暂停");
@@ -52,6 +52,7 @@ internal sealed class MainForm : Form
     {
         public SearchHit Hit { get; } = hit;
         public string FileName => Path.GetFileName(Hit.Path);
+        public string FilePath => Hit.Path;
         public string Sheet => Hit.Sheet;
         public int Row => Hit.Row;
         public string Categories => Hit.Categories;
@@ -85,7 +86,6 @@ internal sealed class MainForm : Form
         stopButton.Click += async (_, _) => { if (controller is not null) await GuardAsync(controller.StopAsync); };
         searchButton.Click += async (_, _) => await GuardAsync(() => SearchAsync(true));
         category.SelectedIndexChanged += (_, _) => { if (!updatingCategories) ScheduleSearch(); };
-        targetList.SizeChanged += (_, _) => ResizeTargets();
         debounce.Tick += async (_, _) => { debounce.Stop(); await GuardAsync(() => SearchAsync(true)); };
         refreshTimer.Tick += (_, _) => UpdateProgress();
         previousButton.Click += async (_, _) =>
@@ -101,7 +101,14 @@ internal sealed class MainForm : Form
             await GuardAsync(() => SearchAsync(false));
         };
         grid.SelectionChanged += async (_, _) => await GuardAsync(LoadPreviewAsync);
-        grid.CellDoubleClick += (_, eventArgs) => { if (eventArgs.RowIndex >= 0) OpenSelected(false); };
+        grid.CellDoubleClick += (_, eventArgs) =>
+        {
+            if (eventArgs.RowIndex < 0 || eventArgs.ColumnIndex < 0) return;
+            var property = grid.Columns[eventArgs.ColumnIndex].DataPropertyName;
+            if (property == nameof(HitView.FileName)) OpenSelected(false);
+            else if (property == nameof(HitView.FilePath)) OpenSelected(true);
+            else if (property == nameof(HitView.Row)) OpenSelectedRow();
+        };
         grid.CellToolTipTextNeeded += (_, eventArgs) =>
         {
             if (eventArgs.RowIndex >= 0 && grid.Rows[eventArgs.RowIndex].DataBoundItem is HitView view)
@@ -120,14 +127,14 @@ internal sealed class MainForm : Form
     private void BuildLayout()
     {
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(20, 14, 20, 0), ColumnCount = 1, RowCount = 8 };
-        foreach (var height in new[] { 58F, 43F, 38F, 116F }) layout.RowStyles.Add(new(SizeType.Absolute, height));
+        foreach (var height in new[] { 52F, 48F, 40F, 110F }) layout.RowStyles.Add(new(SizeType.Absolute, height));
         layout.RowStyles.Add(new(SizeType.Percent, 100));
         layout.RowStyles.Add(new(SizeType.Absolute, 42));
         layout.RowStyles.Add(new(SizeType.Absolute, 28));
         layout.RowStyles.Add(new(SizeType.Absolute, 12));
         var heading = new Panel { Dock = DockStyle.Fill };
         heading.Controls.Add(new Label { Text = "WordFinder", AutoSize = true, Font = new Font(Font.FontFamily, 19, FontStyle.Bold), Location = new Point(0, 0) });
-        heading.Controls.Add(new Label { Text = "Excel 本地全文检索 · 原文件只读 · 搜索直接查询本机索引", AutoSize = true, Location = new Point(198, 17), ForeColor = SystemColors.GrayText });
+        heading.Controls.Add(new Label { Text = "Excel 本地全文检索 · 原文件只读", AutoSize = true, Location = new Point(210, 17), ForeColor = SystemColors.GrayText });
         layout.Controls.Add(heading, 0, 0);
         var toolbar = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
         toolbar.Controls.AddRange([settingsButton, indexButton, pauseButton, stopButton]);
@@ -163,10 +170,11 @@ internal sealed class MainForm : Form
             Size = new Size(1000, 450), SplitterDistance = 205, Panel1MinSize = 90, Panel2MinSize = 200, SplitterWidth = 6 };
         var results = new Panel { Dock = DockStyle.Fill, BackColor = SystemColors.Window };
         AddColumn("文件名", nameof(HitView.FileName), 19);
+        AddColumn("文件路径", nameof(HitView.FilePath), 28);
         AddColumn("分类", nameof(HitView.Categories), 11);
         AddColumn("工作表", nameof(HitView.Sheet), 11);
         AddColumn("行号", nameof(HitView.Row), 6);
-        AddColumn("命中预览", nameof(HitView.Preview), 46);
+        AddColumn("命中预览", nameof(HitView.Preview), 32);
         AddColumn("状态", nameof(HitView.State), 7);
         grid.RowTemplate.Height = 29;
         grid.ColumnHeadersHeight = 32;
@@ -221,13 +229,13 @@ internal sealed class MainForm : Form
     private void AddTarget()
     {
         if (targets.Count >= 16) { status.Text = "最多支持 16 个搜索目标。"; return; }
-        var row = new TableLayoutPanel { Height = 34, ColumnCount = 3, Margin = new Padding(0, 0, 0, 2) };
-        row.ColumnStyles.Add(new(SizeType.Absolute, 62));
-        row.ColumnStyles.Add(new(SizeType.Percent, 100));
-        row.ColumnStyles.Add(new(SizeType.Absolute, 36));
-        row.Controls.Add(new Label { AutoSize = true, Text = $"目标 {targets.Count + 1}", Margin = new Padding(0, 6, 0, 0) }, 0, 0);
-        var input = new TextBox { Dock = DockStyle.Fill, PlaceholderText = targets.Count == 0 ? "例如：张三" : "例如：上海（留空不参与搜索）", MaxLength = 32767 };
-        input.TextChanged += (_, _) => ScheduleSearch();
+        var row = new FlowLayoutPanel { Height = 36, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false, Margin = new Padding(0, 0, 6, 2) };
+        var input = new TextBox { Width = 105, PlaceholderText = "输入关键词", MaxLength = 20, AccessibleName = "搜索目标" };
+        input.TextChanged += (_, _) =>
+        {
+            input.Width = Math.Clamp(TextRenderer.MeasureText(input.Text.Length == 0 ? input.PlaceholderText : input.Text, input.Font).Width + 24, 105, 280);
+            ScheduleSearch();
+        };
         input.KeyDown += async (_, args) =>
         {
             if (args.KeyCode != Keys.Enter) return;
@@ -235,7 +243,7 @@ internal sealed class MainForm : Form
             debounce.Stop();
             await GuardAsync(() => SearchAsync(true));
         };
-        row.Controls.Add(input, 1, 0);
+        row.Controls.Add(input);
         var remove = new Button { Text = "×", Width = 30, Height = 27, Margin = new Padding(4, 2, 0, 0), AccessibleName = "移除搜索目标" };
         remove.Click += (_, _) =>
         {
@@ -243,19 +251,12 @@ internal sealed class MainForm : Form
             targets.Remove(input);
             targetList.Controls.Remove(row);
             row.Dispose();
-            for (var index = 0; index < targetList.Controls.Count; index++)
-                ((TableLayoutPanel)targetList.Controls[index]).Controls[0].Text = $"目标 {index + 1}";
             ScheduleSearch();
         };
-        row.Controls.Add(remove, 2, 0);
+        row.Controls.Add(remove);
         targets.Add(input);
         targetList.Controls.Add(row);
-        ResizeTargets();
-    }
-
-    private void ResizeTargets()
-    {
-        foreach (Control row in targetList.Controls) row.Width = Math.Max(300, targetList.ClientSize.Width - 24);
+        if (Visible) input.Focus();
     }
 
     private string[] CurrentTargets() => targets.Select(input => input.Text).Where(text => !string.IsNullOrWhiteSpace(text)).ToArray();
@@ -315,16 +316,16 @@ internal sealed class MainForm : Form
     {
         var request = ++previewRequest;
         var hit = SelectedHit;
-        if (hit is null) { preview.Clear(); previewTitle.Text = "选中结果查看整行内容"; return; }
+        if (hit is null) { preview.Clear(); previewTitle.Text = "选中结果查看命中内容"; return; }
         var cells = await Task.Run(() => search.GetCells(hit.RowId));
         if (request != previewRequest || closing) return;
         previewTitle.Text = $"{Path.GetFileName(hit.Path)}  /  {hit.Sheet}  /  第 {hit.Row:N0} 行" + (hit.IsStale ? "  · 文件更新失败，当前显示旧索引" : "");
         var queries = CurrentTargets().Select(TextStorage.Normalize).ToArray();
         var content = new StringBuilder();
         content.AppendLine(hit.Path).AppendLine();
-        foreach (var cell in cells)
+        foreach (var cell in cells.Where(cell => queries.Any(target => TextStorage.Contains(cell.Text, target))))
         {
-            var matches = queries.Select((target, index) => (target, index)).Where(item => TextStorage.Contains(cell.Text, item.target)).Select(item => $"目标{item.index + 1}");
+            var matches = queries.Where(target => TextStorage.Contains(cell.Text, target));
             var caption = string.Join("、", matches);
             content.Append('[').Append(CellAddress.Format(cell.Column, hit.Row)).Append(']');
             if (caption.Length > 0) content.Append("  命中 ").Append(caption);
@@ -465,6 +466,36 @@ internal sealed class MainForm : Form
         catch (Exception exception) { ShowError(exception); }
     }
 
+    private void OpenSelectedRow()
+    {
+        var hit = SelectedHit;
+        if (hit is null) return;
+        if (!File.Exists(hit.Path)) { ShowError(new FileNotFoundException("源文件已不存在。")); return; }
+        var excelType = Type.GetTypeFromProgID("Excel.Application");
+        if (excelType is null)
+        {
+            MessageBox.Show(this, "跳转到指定行需要安装 Microsoft Excel。可以双击文件名使用默认程序打开。", "无法定位行");
+            return;
+        }
+        dynamic? excel = null;
+        try
+        {
+            excel = Activator.CreateInstance(excelType)!;
+            excel.AutomationSecurity = 3; // Disable workbook macros during the explicit open.
+            dynamic book = excel.Workbooks.Open(hit.Path, UpdateLinks: 0, ReadOnly: true);
+            dynamic sheet = book.Worksheets[hit.Sheet];
+            excel.Visible = true;
+            sheet.Activate();
+            excel.Goto(sheet.Cells[hit.Row, 1], true);
+            status.Text = "已在 Excel 中定位到所选行（只读）。";
+        }
+        catch (Exception exception)
+        {
+            if (excel is not null) { try { excel.Quit(); } catch (Exception) { } }
+            ShowError(new InvalidOperationException("无法定位到该行，请确认工作表仍存在且 Excel 可打开文件。\n" + exception.Message));
+        }
+    }
+
     private async Task ShowFailuresAsync()
     {
         var failures = await Task.Run(database.GetFailures);
@@ -490,14 +521,14 @@ internal sealed class MainForm : Form
         status.Text = "正在检查软件版本，本机搜索仍可使用…";
         var release = await UpdateClient.CheckAsync(settings.GitHubRepository, CancellationToken.None);
         if (release is null) { status.Text = "当前已是最新正式版本。"; return; }
-        using var dialog = new TextDialog($"发现新版本 {release.Version}", $"当前版本：0.1.0\r\n新版本：{release.Version}\r\n\r\n{release.Notes}\r\n\r\n下载后关闭软件，再替换 WordFinder.exe。配置和兼容索引将保留。");
+        using var dialog = new TextDialog($"发现新版本 {release.Version}", $"当前版本：0.2.0\r\n新版本：{release.Version}\r\n\r\n{release.Notes}\r\n\r\n下载后关闭软件，再替换 WordFinder.exe。配置和兼容索引将保留。");
         dialog.Controls.Add(new Button { Text = "打开 GitHub 下载页面", Dock = DockStyle.Bottom, Height = 38, DialogResult = DialogResult.OK });
         if (dialog.ShowDialog(this) == DialogResult.OK) Process.Start(new ProcessStartInfo(release.Page.AbsoluteUri) { UseShellExecute = true });
     }
 
     private void ShowHelp()
     {
-        using var dialog = new TextDialog("WordFinder 使用说明 · 0.1.0", """
+        using var dialog = new TextDialog("WordFinder 使用说明 · 0.2.0", """
             1. 点击“目录和设置”，添加一个或多个本机文件夹，可重命名分类标记。
             2. 点击“更新索引”，等待文件完成；最小化后可以继续后台运行。
             3. 每个目标框输入一段内容，例如目标1“张三”、目标2“上海”。

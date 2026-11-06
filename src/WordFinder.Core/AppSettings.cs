@@ -5,7 +5,7 @@ namespace WordFinder.Core;
 public sealed class AppSettings
 {
     public int MemoryLimitMiB { get; set; } = 512;
-    public string GitHubRepository { get; set; } = "";
+    public string GitHubRepository { get; set; } = "yishipi/WordFinder";
 
     public static AppSettings Load(string directory)
     {

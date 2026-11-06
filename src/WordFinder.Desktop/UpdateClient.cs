@@ -10,7 +10,7 @@ internal static class UpdateClient
     public static async Task<ReleaseInfo?> CheckAsync(string repository, CancellationToken cancellationToken)
     {
         using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
-        client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("WordFinder", "0.1.0"));
+        client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("WordFinder", "0.2.0"));
         client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
         using var response = await client.GetAsync($"https://api.github.com/repos/{repository}/releases/latest", cancellationToken);
         if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
