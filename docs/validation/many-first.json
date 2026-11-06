@@ -1,0 +1,37 @@
+{
+  "Summary": {
+    "Total": 10000,
+    "Parsed": 10000,
+    "Skipped": 0,
+    "Failed": 0,
+    "Cancelled": false
+  },
+  "Seconds": 143.9622015,
+  "LimitMiB": 512,
+  "WorkerPeakCommittedMiB": 107.52734375,
+  "Statistics": {
+    "Files": 10000,
+    "Rows": 10000,
+    "Cells": 30000,
+    "Texts": 10004,
+    "Failed": 0,
+    "SourceBytes": 18969841,
+    "StorageBytes": 6750208
+  },
+  "FirstPageHits": 50,
+  "QueryMilliseconds": [
+    51.3497,
+    25.3154,
+    27.5387,
+    25.7266,
+    32.4697,
+    30.6354,
+    25.233,
+    30.3588,
+    37.3289,
+    27.294
+  ],
+  "Warnings": [],
+  "OS": "Microsoft Windows NT 10.0.26200.0",
+  "Runtime": "10.0.14"
+}

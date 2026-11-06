@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>WordFinder</AssemblyName>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <PlatformTarget>x64</PlatformTarget>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../WordFinder.Core/WordFinder.Core.csproj" />
+    <InternalsVisibleTo Include="WordFinder.Benchmarks" />
+    <EmbeddedResource Include="../../THIRD-PARTY-NOTICES.md" LogicalName="WordFinder.ThirdPartyNotices" />
+    <EmbeddedResource Include="../../docs/licenses/*.txt" LogicalName="WordFinder.Licenses.%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,39 @@
+{
+  "Summary": {
+    "Total": 3,
+    "Parsed": 2,
+    "Skipped": 0,
+    "Failed": 1,
+    "Cancelled": false
+  },
+  "Seconds": 1.7368908,
+  "LimitMiB": 512,
+  "WorkerPeakCommittedMiB": 77.46875,
+  "Statistics": {
+    "Files": 2,
+    "Rows": 7,
+    "Cells": 13,
+    "Texts": 11,
+    "Failed": 1,
+    "SourceBytes": 4313,
+    "StorageBytes": 126976
+  },
+  "FirstPageHits": 4,
+  "QueryMilliseconds": [
+    29.2711,
+    1.4887,
+    1.0564,
+    1.2603,
+    0.8161,
+    0.9633,
+    1.1038,
+    0.7054,
+    0.689,
+    0.6357
+  ],
+  "Warnings": [
+    "E:\\02.Code\\WordFinder\\artifacts\\samples\\demo\\\u5F02\u5E38\u793A\u4F8B.xlsx\uFF1A\u65E0\u6CD5\u8BC6\u522B Excel \u683C\u5F0F\uFF0C\u6587\u4EF6\u53EF\u80FD\u635F\u574F\u6216\u53EA\u662F\u4FEE\u6539\u4E86\u6269\u5C55\u540D\u3002"
+  ],
+  "OS": "Microsoft Windows NT 10.0.26200.0",
+  "Runtime": "10.0.14"
+}

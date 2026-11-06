@@ -1,0 +1,10 @@
+**/bin/
+**/obj/
+.vs/
+artifacts/
+*.user
+*.db
+*.db-wal
+*.db-shm
+TestResults/
+

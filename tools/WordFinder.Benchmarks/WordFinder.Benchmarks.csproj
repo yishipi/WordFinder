@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/WordFinder.Desktop/WordFinder.Desktop.csproj" />
+    <Compile Include="../../tests/WordFinder.Tests/WorkbookFixture.cs" Link="WorkbookFixture.cs" />
+  </ItemGroup>
+</Project>

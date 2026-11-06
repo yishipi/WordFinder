@@ -1,0 +1,8 @@
+{
+  "Version": "0.1.0",
+  "Date": "2026-11-06",
+  "FinalBytes": 53001093,
+  "FinalSHA256": "3e313b6a48860be8732f1ae7e7e093129e666a8c93e9a26d713d2fb4202a7187",
+  "ScaleBenchmarkBuildSHA256": "f39b28b983e564b3fe10ef5d9bcbc301f3ab33248395120f46ec953b9cd1032b",
+  "Notes": "Scale tests precede final UI-only preview/status layout changes; index engine unchanged."
+}

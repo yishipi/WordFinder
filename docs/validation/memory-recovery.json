@@ -1,0 +1,39 @@
+{
+  "Summary": {
+    "Total": 2,
+    "Parsed": 1,
+    "Skipped": 0,
+    "Failed": 1,
+    "Cancelled": false
+  },
+  "Seconds": 3.1697648,
+  "LimitMiB": 256,
+  "WorkerPeakCommittedMiB": 256,
+  "Statistics": {
+    "Files": 1,
+    "Rows": 1,
+    "Cells": 1,
+    "Texts": 1,
+    "Failed": 1,
+    "SourceBytes": 1888,
+    "StorageBytes": 126976
+  },
+  "FirstPageHits": 1,
+  "QueryMilliseconds": [
+    47.0125,
+    1.4259,
+    1.3079,
+    1.6853,
+    1.2074,
+    1.4598,
+    1.6017,
+    1.5515,
+    1.5337,
+    1.4448
+  ],
+  "Warnings": [
+    "\u7D22\u5F15\u8FDB\u7A0B\u63D0\u524D\u7ED3\u675F\uFF08\u9000\u51FA\u7801 1\uFF0C\u989D\u5EA6 256 MB\uFF09\u3002\u53EF\u8C03\u9AD8\u989D\u5EA6\u540E\u91CD\u8BD5\u3002\r\nSystem.OutOfMemoryException: Exception of type \u0027System.OutOfMemoryException\u0027 was thrown.\r\n   at System.Text.StringBuilder.ToString()\r\n   at ExcelDataReader.Core.OpenXmlFormat.XmlFormat.StringHelper.ReadStringItem(XmlReader reader, String nsSpreadsheetMl)\r\n   at ExcelDataReader.Core.OpenXmlFormat.XmlFormat.XmlSharedStringsReader.ReadOverride()\u002BMoveNext()\r\n   at ExcelDataReader.Core.OpenXmlFormat.XlsxWorkbook.ReadSharedStrings()\r\n   at ExcelDataReader.Core.OpenXmlFormat.XlsxWorkbook..ctor(ZipWorker zipWorker)\r\n   at ExcelDataReader.ExcelOpenXmlReader..ctor(Stream stream, Boolean singlePassMode)\r\n   at ExcelDataReader.ExcelReaderFactory.CreateReader(Stream fileStream, ExcelReaderConfiguration configuration)\r\n   at WordFinder.Core.IndexRunner.IndexFile(SqliteConnection connection, FileEntry file, Int64 size, Int64 write, String runId, Action check, Action\u00601 report)\r\n   at WordFinder.Core.IndexRunner.Run(String runId, Boolean retryOnly, Action\u00601 progress, Action checkpoint, CancellationToken cancellationToken)\r\n   at WordFinder.Desktop.WorkerHost.Run(String directory, String runId, Boolean retryOnly)\r\n"
+  ],
+  "OS": "Microsoft Windows NT 10.0.26200.0",
+  "Runtime": "10.0.14"
+}
