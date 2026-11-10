@@ -12,7 +12,7 @@ public sealed class IndexDatabase(string directory)
         Directory.CreateDirectory(DirectoryPath);
         using var connection = Open();
         var version = Convert.ToInt32(Scalar(connection, null, "PRAGMA user_version"));
-        if (version > 1) throw new InvalidDataException("索引由较新版本创建，请使用较新版 WordFinder。");
+        if (version > 2) throw new InvalidDataException("索引由较新版本创建，请使用较新版 WordFinder。");
         Execute(connection, null, "PRAGMA journal_mode=WAL;");
         using var transaction = connection.BeginTransaction();
         Execute(connection, transaction, """
@@ -56,8 +56,20 @@ public sealed class IndexDatabase(string directory)
             CREATE VIRTUAL TABLE IF NOT EXISTS text_fts USING fts5(
                 tokens, content='', contentless_delete=1, detail=none);
             CREATE TABLE IF NOT EXISTS garbage_values(value_id INTEGER PRIMARY KEY);
-            PRAGMA user_version=1;
             """);
+        if (version < 2)
+        {
+            Execute(connection, transaction, """
+                ALTER TABLE cells ADD COLUMN merge_first_row INTEGER;
+                ALTER TABLE cells ADD COLUMN merge_last_row INTEGER;
+                ALTER TABLE cells ADD COLUMN merge_last_column INTEGER;
+                UPDATE files SET indexed_size=-1,
+                    last_error=CASE WHEN state='ready' THEN '索引格式已升级，请点击更新索引。' ELSE last_error END,
+                    state=CASE WHEN state='ready' THEN 'interrupted' ELSE state END
+                WHERE active_generation IS NOT NULL;
+                PRAGMA user_version=2;
+                """);
+        }
         transaction.Commit();
     }
 

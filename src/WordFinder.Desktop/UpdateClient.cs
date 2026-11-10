@@ -10,7 +10,8 @@ internal static class UpdateClient
     public static async Task<ReleaseInfo?> CheckAsync(string repository, CancellationToken cancellationToken)
     {
         using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
-        client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("WordFinder", "0.2.0"));
+        var currentVersion = typeof(UpdateClient).Assembly.GetName().Version!;
+        client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("WordFinder", currentVersion.ToString(3)));
         client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
         using var response = await client.GetAsync($"https://api.github.com/repos/{repository}/releases/latest", cancellationToken);
         if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
@@ -25,7 +26,7 @@ internal static class UpdateClient
         if (root.GetProperty("prerelease").GetBoolean() || root.GetProperty("draft").GetBoolean()) return null;
         if (!Version.TryParse(tag.TrimStart('v', 'V'), out var remote))
             throw new InvalidOperationException("发布版本号无法识别，请使用 v1.2.3 格式。");
-        var current = typeof(UpdateClient).Assembly.GetName().Version!;
+        var current = currentVersion;
         remote = new(remote.Major, remote.Minor, Math.Max(0, remote.Build), Math.Max(0, remote.Revision));
         if (remote <= current) return null;
         var notes = root.TryGetProperty("body", out var body) ? body.GetString() ?? "" : "";

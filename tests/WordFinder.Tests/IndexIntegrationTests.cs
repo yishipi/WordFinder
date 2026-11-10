@@ -23,6 +23,141 @@ public sealed class IndexIntegrationTests : IDisposable
         new IndexRunner(database).Run(Guid.NewGuid().ToString("N"), retry, progress, cancellationToken: token);
 
     [Fact]
+    public async Task DirectoryMonitorDetectsCreateModifyRenameAndDeleteForIncrementalIndexing()
+    {
+        var first = Path.Combine(Sources, "first.xlsx");
+        var renamed = Path.Combine(Sources, "renamed.xlsx");
+        async Task ChangeAndUpdate(Action action)
+        {
+            var notification = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var monitor = new DirectoryChangeMonitor(error => notification.TrySetResult(error));
+            Assert.Empty(monitor.Configure(database.GetRoots()));
+            action();
+            Assert.False(await notification.Task.WaitAsync(TimeSpan.FromSeconds(10)));
+            Run();
+        }
+        await ChangeAndUpdate(() => WorkbookFixture.Write(first, new TestSheet("表", [new(1, "A", "初次写入")])));
+        Assert.Single(search.Search(["初次写入"]).Hits);
+        await ChangeAndUpdate(() => WorkbookFixture.Write(first, new TestSheet("表", [new(1, "A", "更新后的内容")])));
+        Assert.Empty(search.Search(["初次写入"]).Hits);
+        Assert.Single(search.Search(["更新后的内容"]).Hits);
+        await ChangeAndUpdate(() => File.Move(first, renamed));
+        Assert.Equal(renamed, Assert.Single(search.Search(["更新后的内容"]).Hits).Path);
+        await ChangeAndUpdate(() => File.Delete(renamed));
+        Assert.Empty(search.Search(["更新后的内容"]).Hits);
+    }
+
+    [Fact]
+    public async Task DirectoryMonitorIgnoresOtherFilesAndTracksDirectoryMoves()
+    {
+        var temporary = Path.Combine(Sources, "document.tmp");
+        var renamed = Path.Combine(Sources, "document.pdf");
+        var unexpected = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using (var monitor = new DirectoryChangeMonitor(error => unexpected.TrySetResult(error)))
+        {
+            Assert.Empty(monitor.Configure(database.GetRoots()));
+            File.WriteAllText(temporary, "content");
+            File.Move(temporary, renamed);
+            File.Delete(renamed);
+            await Task.Delay(800);
+            Assert.False(unexpected.Task.IsCompleted, "非 Excel 文件不能触发索引更新。");
+        }
+        var folder = Path.Combine(Sources, "业务.2026");
+        var moved = Path.Combine(Sources, "业务.2027");
+        async Task ExpectDirectoryEvent(Action action)
+        {
+            var notification = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var monitor = new DirectoryChangeMonitor(error => notification.TrySetResult(error));
+            Assert.Empty(monitor.Configure(database.GetRoots()));
+            action();
+            Assert.False(await notification.Task.WaitAsync(TimeSpan.FromSeconds(10)));
+        }
+        await ExpectDirectoryEvent(() => Directory.CreateDirectory(folder));
+        WorkbookFixture.Write(Path.Combine(folder, "data.xlsx"), new TestSheet("表", [new(1, "A", "目录内数据")]));
+        Run();
+        await ExpectDirectoryEvent(() => Directory.Move(folder, moved));
+        Run();
+        Assert.Equal(Path.Combine(moved, "data.xlsx"), Assert.Single(search.Search(["目录内数据"]).Hits).Path);
+        await ExpectDirectoryEvent(() => Directory.Delete(moved, true));
+        Run();
+        Assert.Empty(search.Search(["目录内数据"]).Hits);
+    }
+
+    [Fact]
+    public async Task DirectoryMonitorDetectsFilesRenamedIntoAndOutOfExcelFormats()
+    {
+        var temporary = Path.Combine(Sources, "book.tmp");
+        var excel = Path.Combine(Sources, "book.xlsx");
+        File.WriteAllText(temporary, "test");
+        async Task ExpectExcelRename(string from, string to)
+        {
+            var notification = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var monitor = new DirectoryChangeMonitor(error => notification.TrySetResult(error));
+            Assert.Empty(monitor.Configure(database.GetRoots()));
+            File.Move(from, to);
+            Assert.False(await notification.Task.WaitAsync(TimeSpan.FromSeconds(10)));
+        }
+        await ExpectExcelRename(temporary, excel);
+        await ExpectExcelRename(excel, temporary);
+    }
+
+    [Fact]
+    public void MergedValuesMatchEveryCoveredRowAndRetainOriginalRange()
+    {
+        var path = Path.Combine(Sources, "merged.xlsx");
+        WorkbookFixture.Write(path, new TestSheet("表", [new(1, "C", "张三"), new(3, "G", "上海"), new(6, "G", "上海")],
+            Merges: ["C1:F5"]));
+        Assert.Equal(1, Run().Parsed);
+        var hits = search.Search(["张三"]).Hits;
+        Assert.Equal(new[] { 1, 2, 3, 4, 5 }, hits.Select(hit => hit.Row).Order().ToArray());
+        Assert.All(hits, hit => Assert.Contains("C1:F5", hit.Preview));
+        var combined = Assert.Single(search.Search(["张三", "上海"]).Hits);
+        Assert.Equal(3, combined.Row);
+        Assert.Contains("C1:F5", combined.Preview);
+        Assert.Contains("G3", combined.Preview);
+        Assert.Contains("张三", search.CopyRow(combined.RowId));
+        Assert.Equal(1, Run().Skipped);
+    }
+
+    [Fact]
+    public void MultipleMergedRangesDoNotCrossSheetsAndUpdateWithTheFile()
+    {
+        var path = Path.Combine(Sources, "merges.xlsx");
+        WorkbookFixture.Write(path,
+            new TestSheet("一", [new(1, "C", "姓名"), new(1, "G", "区域"), new(2, "I", "上海")], Merges: ["C1:F5", "G1:H3"]),
+            new TestSheet("二", [new(3, "A", "上海")], Merges: ["A3:A4"]));
+        Assert.Equal(1, Run().Parsed);
+        Assert.Equal(new[] { 1, 2, 3 }, search.Search(["姓名", "区域"]).Hits.Select(hit => hit.Row).Order().ToArray());
+        Assert.Equal(2, Assert.Single(search.Search(["姓名", "上海"]).Hits).Row);
+        Assert.Equal(2, search.Search(["上海"]).Hits.Count(hit => hit.Sheet == "二"));
+        WorkbookFixture.Write(path, new TestSheet("一", [new(1, "C", "新姓名")], Merges: ["C1:C2"]));
+        Assert.Equal(1, Run().Parsed);
+        Assert.Empty(search.Search(["区域"]).Hits);
+        Assert.Equal(2, search.Search(["新姓名"]).Hits.Count);
+    }
+
+    [Fact]
+    public void UpgradePreservesExistingIndexAndForcesOneReindex()
+    {
+        var path = Path.Combine(Sources, "upgrade.xlsx");
+        WorkbookFixture.Write(path, new TestSheet("表", [new(1, "C", "保留")], Merges: ["C1:F5"]));
+        Assert.Equal(1, Run().Parsed);
+        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={database.DatabasePath}"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE cells DROP COLUMN merge_first_row; ALTER TABLE cells DROP COLUMN merge_last_row; ALTER TABLE cells DROP COLUMN merge_last_column; PRAGMA user_version=1;";
+            command.ExecuteNonQuery();
+        }
+        database.Initialize();
+        Assert.NotEmpty(search.Search(["保留"]).Hits);
+        Assert.All(search.Search(["保留"]).Hits, hit => Assert.True(hit.IsStale));
+        Assert.Equal(1, Run().Parsed);
+        Assert.Equal(5, search.Search(["保留"]).Hits.Count);
+        Assert.Equal(1, Run().Skipped);
+    }
+
+    [Fact]
     public void MatchesTargetsOnSameRowAcrossCellsAndPreservesRealCoordinates()
     {
         WorkbookFixture.Write(Path.Combine(Sources, "people.xlsx"),
@@ -162,6 +297,8 @@ public sealed class IndexIntegrationTests : IDisposable
         Assert.Empty(search.Search(["编号123"]).Hits);
         Assert.Single(database.GetRoots());
         Assert.Equal(0, database.GetStatistics().Texts);
+        Assert.Equal(1, Run().Parsed);
+        Assert.Equal(50, search.Search(["编号123"]).Hits.Count);
     }
 
     [Fact]

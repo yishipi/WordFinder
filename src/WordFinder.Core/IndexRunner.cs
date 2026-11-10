@@ -167,7 +167,8 @@ public sealed class IndexRunner(IndexDatabase database)
             transaction.Commit();
         }
         using var stream = new FileStream(file.Path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 65_536, FileOptions.SequentialScan);
-        using var reader = ExcelReaderFactory.CreateReader(stream, new ExcelReaderConfiguration { SinglePassMode = true });
+        // The initial scan is required for merged-range metadata, including ranges after sheetData.
+        using var reader = ExcelReaderFactory.CreateReader(stream, new ExcelReaderConfiguration { SinglePassMode = false });
         using var writer = new FileIndexWriter(connection);
         var formats = new Dictionary<string, NumberFormat>(StringComparer.Ordinal);
         var sheetIndex = 0;
@@ -189,6 +190,7 @@ public sealed class IndexRunner(IndexDatabase database)
                 if (cells.Count > 0) writer.AddRow(sheet, reader.Depth + 1, cells);
                 if (reader.Depth % 500 == 0) report(writer.Cells);
             }
+            foreach (var range in reader.MergeCells) writer.AddMergedRange(sheet, range, check);
         } while (reader.NextResult());
         check();
         var after = new FileInfo(file.Path);

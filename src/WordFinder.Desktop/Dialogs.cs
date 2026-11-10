@@ -13,6 +13,7 @@ internal sealed class SettingsForm : Form
     private readonly TextBox repository = new() { Width = 340, PlaceholderText = "owner/repo（发布前配置）" };
     private readonly Label storage = new() { AutoSize = true, MaximumSize = new Size(700, 0) };
     private bool busy;
+    public bool IndexClearRequested { get; private set; }
 
     public SettingsForm(IndexDatabase database, AppSettings settings)
     {
@@ -134,8 +135,9 @@ internal sealed class SettingsForm : Form
 
     private async Task MaintainAsync(bool clear)
     {
-        var prompt = clear ? "清空已有索引？目录分类和源文件会保留，之后需要重新建立索引。" : "整理索引可能需要一些时间和额外磁盘空间，期间请等待完成。";
+        var prompt = clear ? "清空已有索引？目录分类和源文件会保留。自动更新将暂停，点击“更新索引”或重新打开软件后恢复。" : "整理索引可能需要一些时间和额外磁盘空间，期间请等待完成。";
         if (MessageBox.Show(this, prompt, clear ? "清空索引" : "整理压缩", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
+        if (clear) IndexClearRequested = true;
         await BusyAsync(() =>
         {
             if (clear) database.ClearIndex();

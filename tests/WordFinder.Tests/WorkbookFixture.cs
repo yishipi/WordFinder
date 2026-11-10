@@ -4,7 +4,7 @@ using System.Xml.Linq;
 namespace WordFinder.Tests;
 
 internal sealed record TestCell(int Row, string Column, string Value, string Type = "inlineStr", int Style = 0, string? Formula = null);
-internal sealed record TestSheet(string Name, TestCell[] Cells, bool Hidden = false);
+internal sealed record TestSheet(string Name, TestCell[] Cells, bool Hidden = false, string[]? Merges = null);
 
 internal static class WorkbookFixture
 {
@@ -69,8 +69,11 @@ internal static class WorkbookFixture
                     else node.Add(new XAttribute("t", cell.Type), new XElement(Spreadsheet + "v", cell.Value));
                     return node;
                 })));
-            Add(archive, $"xl/worksheets/sheet{index + 1}.xml",
-                new XElement(Spreadsheet + "worksheet", new XElement(Spreadsheet + "sheetData", rows)).ToString());
+            var worksheet = new XElement(Spreadsheet + "worksheet", new XElement(Spreadsheet + "sheetData", rows));
+            if (sheets[index].Merges is { Length: > 0 } merges)
+                worksheet.Add(new XElement(Spreadsheet + "mergeCells", new XAttribute("count", merges.Length),
+                    merges.Select(range => new XElement(Spreadsheet + "mergeCell", new XAttribute("ref", range)))));
+            Add(archive, $"xl/worksheets/sheet{index + 1}.xml", worksheet.ToString());
         }
     }
 

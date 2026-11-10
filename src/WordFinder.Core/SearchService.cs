@@ -65,7 +65,7 @@ public sealed class SearchService(IndexDatabase database)
             cancellationToken.ThrowIfCancellationRequested();
             var hit = rows[index];
             var matching = GetCells(connection, hit.RowId).Where(cell => normalized.Any(target => TextStorage.Contains(cell.Text, target)));
-            var preview = string.Join("；", matching.Take(3).Select(cell => $"{CellAddress.Format(cell.Column, hit.Row)} {TextStorage.Preview(cell.Text, 70)}"));
+            var preview = string.Join("；", matching.Take(3).Select(cell => $"{cell.Address(hit.Row)} {TextStorage.Preview(cell.Text, 70)}"));
             rows[index] = hit with { Preview = preview };
         }
         return new(rows, hasMore);
@@ -80,12 +80,13 @@ public sealed class SearchService(IndexDatabase database)
     private static IReadOnlyList<CellValue> GetCells(SqliteConnection connection, long rowId)
     {
         using var command = IndexDatabase.Command(connection, null, """
-            SELECT c.column_index,v.payload,v.codec FROM cells c JOIN text_values v ON v.id=c.value_id
+            SELECT c.column_index,v.payload,v.codec,c.merge_first_row,c.merge_last_row,c.merge_last_column FROM cells c JOIN text_values v ON v.id=c.value_id
             WHERE c.row_id=$row ORDER BY c.column_index
             """, ("$row", rowId));
         using var reader = command.ExecuteReader();
         var cells = new List<CellValue>();
-        while (reader.Read()) cells.Add(new(reader.GetInt32(0), TextStorage.Decode((byte[])reader[1], reader.GetInt64(2))));
+        while (reader.Read()) cells.Add(new(reader.GetInt32(0), TextStorage.Decode((byte[])reader[1], reader.GetInt64(2)),
+            reader.IsDBNull(3) ? null : reader.GetInt32(3), reader.IsDBNull(4) ? null : reader.GetInt32(4), reader.IsDBNull(5) ? null : reader.GetInt32(5)));
         return cells;
     }
 

@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Data.Sqlite;
+using ExcelDataReader;
 
 namespace WordFinder.Core;
 
@@ -50,6 +51,41 @@ internal sealed class FileIndexWriter : IDisposable
         Rows++;
         if (batchCells >= 10_000)
         {
+            transaction!.Commit();
+            transaction.Dispose();
+            BeginBatch();
+            batchCells = 0;
+        }
+    }
+
+    public void AddMergedRange(long sheet, CellRange range, Action check)
+    {
+        var first = range.FromRow + 1;
+        var last = range.ToRow + 1;
+        var column = range.FromColumn;
+        var anchor = IndexDatabase.Scalar(connection, transaction, """
+            SELECT c.value_id FROM cells c JOIN rows r ON r.id=c.row_id
+            WHERE r.sheet_id=$sheet AND r.number=$row AND c.column_index=$column
+            """, ("$sheet", sheet), ("$row", first), ("$column", column));
+        if (anchor is null) return;
+        var id = Convert.ToInt64(anchor);
+        IndexDatabase.Execute(connection, transaction, """
+            UPDATE cells SET merge_first_row=$first,merge_last_row=$last,merge_last_column=$end
+            WHERE row_id=(SELECT id FROM rows WHERE sheet_id=$sheet AND number=$first) AND column_index=$column
+            """, ("$first", first), ("$last", last), ("$end", range.ToColumn), ("$sheet", sheet), ("$column", column));
+        for (var row = first + 1; row <= last; row++)
+        {
+            check();
+            var added = IndexDatabase.Execute(connection, transaction, "INSERT OR IGNORE INTO rows(sheet_id,number) VALUES($sheet,$row)", ("$sheet", sheet), ("$row", row));
+            Rows += added;
+            var inserted = IndexDatabase.Execute(connection, transaction, """
+                INSERT OR IGNORE INTO cells(row_id,column_index,value_id,merge_first_row,merge_last_row,merge_last_column)
+                SELECT id,$column,$value,$first,$last,$end FROM rows WHERE sheet_id=$sheet AND number=$row
+                """, ("$column", column), ("$value", id), ("$first", first), ("$last", last),
+                ("$end", range.ToColumn), ("$sheet", sheet), ("$row", row));
+            Cells += inserted;
+            batchCells += inserted;
+            if (batchCells < 10_000) continue;
             transaction!.Commit();
             transaction.Dispose();
             BeginBatch();

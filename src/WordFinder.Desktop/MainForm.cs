@@ -35,6 +35,13 @@ internal sealed class MainForm : Form
     private readonly Label statistics = new() { AutoSize = true, Text = "本地索引", Margin = new Padding(12, 9, 0, 0), ForeColor = SystemColors.GrayText };
     private readonly System.Windows.Forms.Timer debounce = new() { Interval = 250 };
     private readonly System.Windows.Forms.Timer refreshTimer = new() { Interval = 200 };
+    private readonly System.Windows.Forms.Timer monitorTimer = new() { Interval = 1000 };
+    private readonly DirectoryChangeMonitor monitor;
+    private readonly Stopwatch reconciliation = Stopwatch.StartNew();
+    private long lastChange;
+    private int monitorError;
+    private bool settingsOpen;
+    private bool automaticSuspended;
     private readonly SemaphoreSlim searchGate = new(1, 1);
     private readonly Stack<long> history = new();
     private SearchPage page = new([], false);
@@ -48,6 +55,7 @@ internal sealed class MainForm : Form
     private int previewRequest;
 
     private sealed record CategoryChoice(long? Id, string Label);
+    private static string VersionText => typeof(MainForm).Assembly.GetName().Version?.ToString(3) ?? "未知";
     private sealed class HitView(SearchHit hit)
     {
         public SearchHit Hit { get; } = hit;
@@ -57,7 +65,7 @@ internal sealed class MainForm : Form
         public int Row => Hit.Row;
         public string Categories => Hit.Categories;
         public string Preview => Hit.Preview;
-        public string State => Hit.IsStale ? "旧索引" : "";
+        public string State => Hit.IsStale ? "旧索引" : "正常";
     }
 
     public MainForm(IndexDatabase database, AppSettings settings)
@@ -65,6 +73,11 @@ internal sealed class MainForm : Form
         this.database = database;
         this.settings = settings;
         search = new(database);
+        monitor = new(error =>
+        {
+            if (error) Interlocked.Exchange(ref monitorError, 1);
+            Interlocked.Exchange(ref lastChange, Stopwatch.GetTimestamp());
+        });
         Text = "WordFinder · Excel 本地检索";
         Size = new(1220, 850);
         MinimumSize = new(960, 690);
@@ -75,7 +88,12 @@ internal sealed class MainForm : Form
         AddTarget();
         AddTarget();
         settingsButton.Click += async (_, _) => await GuardAsync(OpenSettingsAsync);
-        indexButton.Click += async (_, _) => await GuardAsync(() => StartIndexAsync(false));
+        indexButton.Click += async (_, _) =>
+        {
+            automaticSuspended = false;
+            Interlocked.Exchange(ref lastChange, 0);
+            await GuardAsync(() => StartIndexAsync(false));
+        };
         pauseButton.Click += (_, _) =>
         {
             if (controller is null) return;
@@ -83,11 +101,17 @@ internal sealed class MainForm : Form
             pauseButton.Text = controller.IsPaused ? "继续" : "暂停";
             status.Text = controller.IsPaused ? "已请求暂停，等待当前读取步骤结束…" : "正在继续索引…";
         };
-        stopButton.Click += async (_, _) => { if (controller is not null) await GuardAsync(controller.StopAsync); };
+        stopButton.Click += async (_, _) =>
+        {
+            automaticSuspended = true;
+            Interlocked.Exchange(ref lastChange, 0);
+            if (controller is not null) await GuardAsync(controller.StopAsync);
+        };
         searchButton.Click += async (_, _) => await GuardAsync(() => SearchAsync(true));
         category.SelectedIndexChanged += (_, _) => { if (!updatingCategories) ScheduleSearch(); };
         debounce.Tick += async (_, _) => { debounce.Stop(); await GuardAsync(() => SearchAsync(true)); };
         refreshTimer.Tick += (_, _) => UpdateProgress();
+        monitorTimer.Tick += async (_, _) => await GuardAsync(CheckForChangesAsync);
         previousButton.Click += async (_, _) =>
         {
             if (!history.TryPop(out cursor)) return;
@@ -120,6 +144,9 @@ internal sealed class MainForm : Form
             await ReloadCategoriesAsync();
             await RefreshStatisticsAsync();
             targets[0].Focus();
+            ConfigureMonitor();
+            monitorTimer.Start();
+            if (database.GetRoots().Count > 0) Interlocked.Exchange(ref lastChange, Stopwatch.GetTimestamp());
         });
         UpdateEnabled();
     }
@@ -170,12 +197,12 @@ internal sealed class MainForm : Form
             Size = new Size(1000, 450), SplitterDistance = 205, Panel1MinSize = 90, Panel2MinSize = 200, SplitterWidth = 6 };
         var results = new Panel { Dock = DockStyle.Fill, BackColor = SystemColors.Window };
         AddColumn("文件名", nameof(HitView.FileName), 19);
-        AddColumn("文件路径", nameof(HitView.FilePath), 28);
-        AddColumn("分类", nameof(HitView.Categories), 11);
         AddColumn("工作表", nameof(HitView.Sheet), 11);
         AddColumn("行号", nameof(HitView.Row), 6);
+        AddColumn("分类", nameof(HitView.Categories), 11);
+        AddColumn("文件路径", nameof(HitView.FilePath), 28);
         AddColumn("命中预览", nameof(HitView.Preview), 32);
-        AddColumn("状态", nameof(HitView.State), 7);
+        AddColumn("索引状态", nameof(HitView.State), 9);
         grid.RowTemplate.Height = 29;
         grid.ColumnHeadersHeight = 32;
         results.Controls.Add(grid);
@@ -319,7 +346,7 @@ internal sealed class MainForm : Form
         if (hit is null) { preview.Clear(); previewTitle.Text = "选中结果查看命中内容"; return; }
         var cells = await Task.Run(() => search.GetCells(hit.RowId));
         if (request != previewRequest || closing) return;
-        previewTitle.Text = $"{Path.GetFileName(hit.Path)}  /  {hit.Sheet}  /  第 {hit.Row:N0} 行" + (hit.IsStale ? "  · 文件更新失败，当前显示旧索引" : "");
+        previewTitle.Text = $"{Path.GetFileName(hit.Path)}  /  {hit.Sheet}  /  第 {hit.Row:N0} 行" + (hit.IsStale ? "  · 当前显示旧索引，请更新或查看失败详情" : "");
         var queries = CurrentTargets().Select(TextStorage.Normalize).ToArray();
         var content = new StringBuilder();
         content.AppendLine(hit.Path).AppendLine();
@@ -327,7 +354,7 @@ internal sealed class MainForm : Form
         {
             var matches = queries.Where(target => TextStorage.Contains(cell.Text, target));
             var caption = string.Join("、", matches);
-            content.Append('[').Append(CellAddress.Format(cell.Column, hit.Row)).Append(']');
+            content.Append('[').Append(cell.Address(hit.Row)).Append(']');
             if (caption.Length > 0) content.Append("  命中 ").Append(caption);
             content.Append("  ").AppendLine(cell.Text.Length > 2000 ? cell.Text[..2000] + "…（预览已缩短，复制整行可获取完整内容）" : cell.Text);
         }
@@ -361,11 +388,51 @@ internal sealed class MainForm : Form
     private async Task OpenSettingsAsync()
     {
         if (runningTask is not null) return;
-        using var dialog = new SettingsForm(database, settings);
-        dialog.ShowDialog(this);
+        settingsOpen = true;
+        var indexClearRequested = false;
+        try
+        {
+            using var dialog = new SettingsForm(database, settings);
+            dialog.ShowDialog(this);
+            indexClearRequested = dialog.IndexClearRequested;
+        }
+        finally { settingsOpen = false; }
+        if (indexClearRequested)
+        {
+            automaticSuspended = true;
+            Interlocked.Exchange(ref lastChange, 0);
+        }
+        ConfigureMonitor();
         await ReloadCategoriesAsync();
         await RefreshStatisticsAsync();
         await SearchAsync(true);
+        if (indexClearRequested) status.Text = "自动更新已暂停，点击更新索引可恢复。";
+        if (database.GetRoots().Count > 0 && !automaticSuspended)
+            Interlocked.Exchange(ref lastChange, Stopwatch.GetTimestamp());
+    }
+
+    private void ConfigureMonitor()
+    {
+        var errors = monitor.Configure(database.GetRoots());
+        if (errors.Count > 0) status.Text = "部分目录无法监听，将定期重新检查：" + string.Join("；", errors);
+    }
+
+    private async Task CheckForChangesAsync()
+    {
+        if (closing || settingsOpen || automaticSuspended) return;
+        var error = Interlocked.Exchange(ref monitorError, 0) != 0;
+        if (error || reconciliation.Elapsed >= TimeSpan.FromMinutes(15))
+        {
+            reconciliation.Restart();
+            ConfigureMonitor();
+            Interlocked.Exchange(ref lastChange, Stopwatch.GetTimestamp());
+        }
+        var change = Interlocked.Read(ref lastChange);
+        if (change == 0 || Stopwatch.GetElapsedTime(change) < TimeSpan.FromSeconds(3) || runningTask is not null) return;
+        if (Interlocked.CompareExchange(ref lastChange, 0, change) != change) return;
+        if (database.GetRoots().Count == 0) return;
+        status.Text = "检测到文件变化，正在自动更新索引…";
+        await StartIndexAsync(false);
     }
 
     private async Task StartIndexAsync(bool retryOnly)
@@ -384,7 +451,7 @@ internal sealed class MainForm : Form
         try
         {
             var result = await runningTask;
-            status.Text = result.Cancelled ? "索引已停止，完成的文件已保存" : $"索引完成：更新 {result.Parsed:N0}，跳过 {result.Skipped:N0}，失败 {result.Failed:N0}";
+            status.Text = result.Cancelled ? "索引已停止；自动更新已暂停，点击更新索引可恢复" : $"索引完成：更新 {result.Parsed:N0}，跳过 {result.Skipped:N0}，失败 {result.Failed:N0}";
             if (controller.Messages.Count > 0) status.Text += " · 详情见失败文件 / 日志";
         }
         finally
@@ -521,14 +588,14 @@ internal sealed class MainForm : Form
         status.Text = "正在检查软件版本，本机搜索仍可使用…";
         var release = await UpdateClient.CheckAsync(settings.GitHubRepository, CancellationToken.None);
         if (release is null) { status.Text = "当前已是最新正式版本。"; return; }
-        using var dialog = new TextDialog($"发现新版本 {release.Version}", $"当前版本：0.2.0\r\n新版本：{release.Version}\r\n\r\n{release.Notes}\r\n\r\n下载后关闭软件，再替换 WordFinder.exe。配置和兼容索引将保留。");
+        using var dialog = new TextDialog($"发现新版本 {release.Version}", $"当前版本：{VersionText}\r\n新版本：{release.Version}\r\n\r\n{release.Notes}\r\n\r\n下载后关闭软件，再替换 WordFinder.exe。配置和兼容索引将保留。");
         dialog.Controls.Add(new Button { Text = "打开 GitHub 下载页面", Dock = DockStyle.Bottom, Height = 38, DialogResult = DialogResult.OK });
         if (dialog.ShowDialog(this) == DialogResult.OK) Process.Start(new ProcessStartInfo(release.Page.AbsoluteUri) { UseShellExecute = true });
     }
 
     private void ShowHelp()
     {
-        using var dialog = new TextDialog("WordFinder 使用说明 · 0.2.0", """
+        using var dialog = new TextDialog($"WordFinder 使用说明 · {VersionText}", """
             1. 点击“目录和设置”，添加一个或多个本机文件夹，可重命名分类标记。
             2. 点击“更新索引”，等待文件完成；最小化后可以继续后台运行。
             3. 每个目标框输入一段内容，例如目标1“张三”、目标2“上海”。
@@ -539,7 +606,8 @@ internal sealed class MainForm : Form
             索引与搜索不启动 Excel，原文件始终只读。
             日期、编号和公式按文件中保存的值及格式索引；不会重新计算公式。
             隐藏工作表和隐藏行列也会被索引。
-            新增、修改、删除文件后，请手动点击“更新索引”。
+            软件打开期间自动监听文件变化，启动时也会增量核对；可手动点击“更新索引”。
+            点击停止会暂停自动更新，手动点击更新索引或重新打开软件后恢复。
             旧文件更新失败时会保留旧索引并标记；错误详情可在“失败文件 / 日志”查看。
             内存不足可到设置中提高索引额度后重试。首版暂不读取加密文件。
             关闭软件会停止任务并保存完成文件，下次从未完成文件重新开始。
@@ -573,6 +641,8 @@ internal sealed class MainForm : Form
         closing = true;
         debounce.Stop();
         refreshTimer.Stop();
+        monitorTimer.Stop();
+        monitor.Dispose();
         queryCancellation?.Cancel();
         Enabled = false;
         try
@@ -609,7 +679,7 @@ internal sealed class MainForm : Form
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) { debounce.Dispose(); refreshTimer.Dispose(); }
+        if (disposing) { debounce.Dispose(); refreshTimer.Dispose(); monitorTimer.Dispose(); monitor.Dispose(); }
         base.Dispose(disposing);
     }
 }

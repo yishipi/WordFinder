@@ -2,7 +2,12 @@ namespace WordFinder.Core;
 
 public sealed record DirectoryRoot(long Id, string Path, string Label);
 public sealed record IndexFailure(long Id, string Path, string Message, bool HasPreviousIndex);
-public sealed record CellValue(int Column, string Text);
+public sealed record CellValue(int Column, string Text, int? MergeFirstRow = null, int? MergeLastRow = null, int? MergeLastColumn = null)
+{
+    public string Address(int row) => MergeFirstRow is int first && MergeLastRow is int last && MergeLastColumn is int end
+        ? $"{CellAddress.Format(Column, first)}:{CellAddress.Format(end, last)}（合并）"
+        : CellAddress.Format(Column, row);
+}
 public sealed record SearchHit(long RowId, string Path, string Sheet, int Row, string Categories,
     string Preview, bool IsStale);
 public sealed record SearchPage(IReadOnlyList<SearchHit> Hits, bool HasMore);
