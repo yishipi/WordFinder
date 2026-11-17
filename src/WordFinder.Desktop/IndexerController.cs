@@ -15,9 +15,10 @@ internal sealed class IndexerController(IndexDatabase database, int memoryLimitM
     private string? controlPath;
     private bool paused;
     private volatile bool cancelling;
+    private volatile string? logError;
 
     public IndexProgress Latest => Volatile.Read(ref latest);
-    public IReadOnlyList<string> Messages => messages.ToArray();
+    public IReadOnlyList<string> Messages => logError is { } error ? messages.Append(error).ToArray() : messages.ToArray();
     public bool IsPaused => paused;
     public long PeakCommittedBytes { get; private set; }
 
@@ -152,9 +153,17 @@ internal sealed class IndexerController(IndexDatabase database, int memoryLimitM
     {
         messages.Enqueue(message);
         while (messages.Count > 500) messages.TryDequeue(out _);
-        var path = Path.Combine(database.DirectoryPath, "index.log");
-        if (File.Exists(path) && new FileInfo(path).Length > 2 * 1024 * 1024)
-            File.Move(path, path + ".old", true);
-        File.AppendAllText(path, $"[{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss}] {message}{Environment.NewLine}");
+        if (logError is not null) return;
+        try
+        {
+            var path = Path.Combine(database.DirectoryPath, "index.log");
+            if (File.Exists(path) && new FileInfo(path).Length > 2 * 1024 * 1024)
+                File.Move(path, path + ".old", true);
+            File.AppendAllText(path, $"[{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss}] {message}{Environment.NewLine}");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            logError = "日志无法写入，本次任务提示仍可查看：" + exception.Message;
+        }
     }
 }

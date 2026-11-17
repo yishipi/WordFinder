@@ -114,15 +114,13 @@ internal sealed class MainForm : Form
         monitorTimer.Tick += async (_, _) => await GuardAsync(CheckForChangesAsync);
         previousButton.Click += async (_, _) =>
         {
-            if (!history.TryPop(out cursor)) return;
-            await GuardAsync(() => SearchAsync(false));
+            if (queryCancellation is not null || debounce.Enabled || !history.TryPeek(out var previous)) return;
+            await GuardAsync(() => SearchAsync(false, previous));
         };
         nextButton.Click += async (_, _) =>
         {
-            if (page.Hits.Count == 0 || !page.HasMore) return;
-            history.Push(cursor);
-            cursor = page.Hits[^1].RowId;
-            await GuardAsync(() => SearchAsync(false));
+            if (queryCancellation is not null || debounce.Enabled || page.Hits.Count == 0 || !page.HasMore) return;
+            await GuardAsync(() => SearchAsync(false, page.Hits[^1].RowId));
         };
         grid.SelectionChanged += async (_, _) => await GuardAsync(LoadPreviewAsync);
         grid.CellDoubleClick += (_, eventArgs) =>
@@ -295,9 +293,10 @@ internal sealed class MainForm : Form
         queryCancellation?.Cancel();
         debounce.Stop();
         debounce.Start();
+        UpdateEnabled();
     }
 
-    private async Task SearchAsync(bool reset)
+    private async Task SearchAsync(bool reset, long? afterRowId = null)
     {
         if (closing) return;
         debounce.Stop();
@@ -305,16 +304,19 @@ internal sealed class MainForm : Form
         using var cancellation = new CancellationTokenSource();
         queryCancellation = cancellation;
         var text = CurrentTargets();
-        if (reset) { history.Clear(); cursor = 0; }
+        var requestedCursor = reset ? 0 : afterRowId ?? cursor;
+        UpdateEnabled();
         if (text.Length == 0)
         {
+            history.Clear();
+            cursor = 0;
             page = new([], false);
             grid.DataSource = null;
             empty.Text = "在目标框中输入要查找的内容。\n多个目标在同一行分别命中即可。";
             empty.Visible = true;
             pageLabel.Text = "";
-            UpdateEnabled();
             queryCancellation = null;
+            UpdateEnabled();
             return;
         }
         var root = (category.SelectedItem as CategoryChoice)?.Id;
@@ -324,9 +326,13 @@ internal sealed class MainForm : Form
         {
             await searchGate.WaitAsync(cancellation.Token);
             SearchPage result;
-            try { result = await Task.Run(() => search.Search(text, root, cursor, cancellationToken: cancellation.Token), cancellation.Token); }
+            try { result = await Task.Run(() => search.Search(text, root, requestedCursor, cancellationToken: cancellation.Token), cancellation.Token); }
             finally { searchGate.Release(); }
             if (cancellation.IsCancellationRequested || closing) return;
+            if (reset) history.Clear();
+            else if (requestedCursor > cursor) history.Push(cursor);
+            else if (requestedCursor < cursor) history.Pop();
+            cursor = requestedCursor;
             page = result;
             grid.DataSource = result.Hits.Select(hit => new HitView(hit)).ToList();
             empty.Text = "没有符合全部目标的行。\n可减少目标或切换分类后重试。";
@@ -336,7 +342,14 @@ internal sealed class MainForm : Form
             UpdateEnabled();
         }
         catch (OperationCanceledException) { }
-        finally { if (ReferenceEquals(queryCancellation, cancellation)) queryCancellation = null; }
+        finally
+        {
+            if (ReferenceEquals(queryCancellation, cancellation))
+            {
+                queryCancellation = null;
+                if (!closing) UpdateEnabled();
+            }
+        }
     }
 
     private async Task LoadPreviewAsync()
@@ -344,13 +357,13 @@ internal sealed class MainForm : Form
         var request = ++previewRequest;
         var hit = SelectedHit;
         if (hit is null) { preview.Clear(); previewTitle.Text = "选中结果查看命中内容"; return; }
-        var cells = await Task.Run(() => search.GetCells(hit.RowId));
+        var queries = CurrentTargets().Select(TextStorage.Normalize).ToArray();
+        var cells = await Task.Run(() => search.GetCells(hit.RowId, queries));
         if (request != previewRequest || closing) return;
         previewTitle.Text = $"{Path.GetFileName(hit.Path)}  /  {hit.Sheet}  /  第 {hit.Row:N0} 行" + (hit.IsStale ? "  · 当前显示旧索引，请更新或查看失败详情" : "");
-        var queries = CurrentTargets().Select(TextStorage.Normalize).ToArray();
         var content = new StringBuilder();
         content.AppendLine(hit.Path).AppendLine();
-        foreach (var cell in cells.Where(cell => queries.Any(target => TextStorage.Contains(cell.Text, target))))
+        foreach (var cell in cells)
         {
             var matches = queries.Where(target => TextStorage.Contains(cell.Text, target));
             var caption = string.Join("、", matches);
@@ -490,8 +503,9 @@ internal sealed class MainForm : Form
         indexButton.Enabled = !active;
         pauseButton.Enabled = active;
         stopButton.Enabled = active;
-        previousButton.Enabled = history.Count > 0;
-        nextButton.Enabled = page.HasMore;
+        var canNavigate = queryCancellation is null && !debounce.Enabled;
+        previousButton.Enabled = canNavigate && history.Count > 0;
+        nextButton.Enabled = canNavigate && page.HasMore;
     }
 
     private async Task CopyAsync(string kind)
@@ -504,8 +518,8 @@ internal sealed class MainForm : Form
         else
         {
             var queries = CurrentTargets().Select(TextStorage.Normalize).ToArray();
-            var cells = await Task.Run(() => search.GetCells(hit.RowId));
-            text = string.Join(Environment.NewLine, cells.Where(cell => queries.Any(target => TextStorage.Contains(cell.Text, target))).Select(cell => cell.Text));
+            var cells = await Task.Run(() => search.GetCells(hit.RowId, queries));
+            text = string.Join(Environment.NewLine, cells.Select(cell => cell.Text));
         }
         if (text.Length == 0) return;
         Clipboard.SetText(text);

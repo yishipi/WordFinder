@@ -282,6 +282,103 @@ public sealed class IndexIntegrationTests : IDisposable
     }
 
     [Fact]
+    public void PreviewsReadOnlyMatchingCellsAndBoundAllocationsForWideRows()
+    {
+        AddWideRows();
+        search.Search(["needle"], pageSize: 1);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var page = search.Search(["needle"]);
+        var matching = search.GetCells(page.Hits[0].RowId, ["needle"]);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        Assert.Equal(50, page.Hits.Count);
+        Assert.All(page.Hits, hit => Assert.Equal($"A{hit.Row} needle", hit.Preview));
+        Assert.Equal("needle", Assert.Single(matching).Text);
+        Assert.True(allocated < 16L * 1024 * 1024, $"命中预览累计分配 {allocated:N0} 字节。");
+        Assert.Empty(search.GetCells(page.Hits[0].RowId, ["不存在的目标"]));
+        Assert.Equal(150, search.GetCells(page.Hits[0].RowId).Count);
+    }
+
+    [Fact]
+    public void ExpiredResultsExplainThatAnotherSearchIsRequired()
+    {
+        var path = Path.Combine(Sources, "replace.xlsx");
+        WorkbookFixture.Write(path, new TestSheet("表", [new(1, "A", "旧结果")]));
+        Run();
+        var old = Assert.Single(search.Search(["旧结果"]).Hits);
+        WorkbookFixture.Write(path, new TestSheet("表", [new(1, "A", "替换后的新结果")]));
+        Run();
+        Assert.Contains("重新搜索", Assert.Throws<InvalidOperationException>(() => search.GetCells(old.RowId)).Message);
+        Assert.Throws<InvalidOperationException>(() => search.GetCells(old.RowId, ["旧结果"]));
+        Assert.Throws<InvalidOperationException>(() => search.CopyRow(old.RowId));
+        Assert.Single(search.Search(["新结果"]).Hits);
+    }
+
+    [Fact]
+    public async Task ConcurrentUpdatesKeepHitPreviewsInTheSameSnapshot()
+    {
+        var path = Path.Combine(Sources, "concurrent.xlsx");
+        void Write(int version) => WorkbookFixture.Write(path, new TestSheet("表",
+            Enumerable.Range(1, 80).Select(row => new TestCell(row, "A", $"共同目标 版本{version}")).ToArray()));
+        Write(0);
+        Run();
+        var updates = Task.Run(() =>
+        {
+            for (var version = 1; version <= 20; version++)
+            {
+                Write(version);
+                Assert.Equal(1, Run().Parsed);
+            }
+        });
+        try
+        {
+            do
+            {
+                var page = search.Search(["共同目标"]);
+                Assert.Equal(50, page.Hits.Count);
+                Assert.All(page.Hits, hit => Assert.Contains("共同目标", hit.Preview));
+                Assert.Single(page.Hits.Select(hit => hit.Preview[(hit.Preview.IndexOf(' ') + 1)..]).Distinct());
+            } while (!updates.IsCompleted);
+        }
+        finally { await updates; }
+    }
+
+    [Fact]
+    public void CancelledSearchesDoNotExposeSqliteInterruptErrors()
+    {
+        AddWideRows();
+        for (var attempt = 0; attempt < 10; attempt++)
+        {
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(1));
+            try { search.Search(["x"], cancellationToken: cancellation.Token); }
+            catch (OperationCanceledException) { Assert.True(cancellation.IsCancellationRequested); }
+        }
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        Assert.ThrowsAny<OperationCanceledException>(() => search.Search(["needle"], cancellationToken: cancelled.Token));
+    }
+
+    private void AddWideRows()
+    {
+        var cells = Enumerable.Range(1, 50).Select(row => new TestCell(row, "A", "needle")).ToList();
+        cells.Add(new(1, "B", new string('x', 32700)));
+        WorkbookFixture.Write(Path.Combine(Sources, "wide.xlsx"), new TestSheet("表", cells.ToArray()));
+        Run();
+        using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={database.DatabasePath}");
+        connection.Open();
+        using var transaction = connection.BeginTransaction();
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "INSERT OR IGNORE INTO cells(row_id,column_index,value_id) SELECT r.id,$column,(SELECT value_id FROM cells WHERE column_index=1 LIMIT 1) FROM rows r";
+        command.Parameters.AddWithValue("$column", 1);
+        for (var column = 1; column < 150; column++)
+        {
+            command.Parameters["$column"].Value = column;
+            command.ExecuteNonQuery();
+        }
+        transaction.Commit();
+    }
+
+    [Fact]
     public void DeduplicatesAndCompressesTextAndSupportsClearAndCompact()
     {
         var longText = string.Concat(Enumerable.Repeat("重复内容 abc 编号123。", 100));

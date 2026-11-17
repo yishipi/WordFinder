@@ -18,6 +18,16 @@ public sealed class SearchService(IndexDatabase database)
             cancellationToken.ThrowIfCancellationRequested();
             return TextStorage.Contains(TextStorage.Decode(payload, codec), target);
         });
+        var previewTexts = new Dictionary<long, string>();
+        connection.CreateFunction<int, int, long, byte[], long, int?, int?, int?, string>("cell_preview",
+            (column, row, id, payload, codec, first, last, end) =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!previewTexts.TryGetValue(id, out var text))
+                    previewTexts[id] = text = TextStorage.Preview(TextStorage.Decode(payload, codec), 70);
+                var cell = new CellValue(column, text, first, last, end);
+                return $"{cell.Address(row)} {text}";
+            });
         var conditions = new List<string>();
         var matches = new List<string>();
         for (var index = 0; index < normalized.Length; index++)
@@ -26,16 +36,26 @@ public sealed class SearchService(IndexDatabase database)
             matches.Add($"matched{index} AS MATERIALIZED (SELECT v.id FROM text_fts JOIN text_values v ON v.id=text_fts.rowid WHERE text_fts MATCH $query{index} AND text_contains(v.payload,v.codec,$target{index}))");
             if (index > 0) conditions.Add($"EXISTS(SELECT 1 FROM cells cx WHERE cx.row_id=r.id AND cx.value_id IN(SELECT id FROM matched{index}))");
         }
+        // A single statement keeps hits and bounded previews in the same read snapshot.
         using var command = IndexDatabase.Command(connection, null, $$"""
-            WITH {{string.Join(",", matches)}}
-            SELECT r.id,f.path,s.name,r.number,f.state,
-                (SELECT group_concat(label,'、') FROM roots rt JOIN root_files rf ON rf.root_id=rt.id WHERE rf.file_id=f.id)
+            WITH {{string.Join(",", matches)}}, hits AS MATERIALIZED (
+            SELECT r.id AS row_id,f.path,s.name AS sheet,r.number,f.state,
+                (SELECT group_concat(label,'、') FROM roots rt JOIN root_files rf ON rf.root_id=rt.id WHERE rf.file_id=f.id) AS categories
             FROM rows r
             JOIN sheets s ON s.id=r.sheet_id JOIN files f ON f.active_generation=s.generation_id
             WHERE r.id IN(SELECT c.row_id FROM cells c WHERE c.value_id IN(SELECT id FROM matched0) AND c.row_id>$after)
                 AND ($root IS NULL OR EXISTS(SELECT 1 FROM root_files rf WHERE rf.file_id=f.id AND rf.root_id=$root))
                 {{(conditions.Count == 0 ? "" : "AND " + string.Join(" AND ", conditions))}}
-            ORDER BY r.id LIMIT $limit
+            ORDER BY r.id LIMIT $limit)
+            SELECT h.row_id,h.path,h.sheet,h.number,h.state,h.categories,
+                (SELECT group_concat(content,'；') FROM (
+                    SELECT cell_preview(c.column_index,h.number,v.id,v.payload,v.codec,
+                        c.merge_first_row,c.merge_last_row,c.merge_last_column) AS content
+                    FROM cells c JOIN text_values v ON v.id=c.value_id
+                    WHERE c.row_id=h.row_id AND c.value_id IN (
+                        {{string.Join(" UNION ", Enumerable.Range(0, normalized.Length).Select(index => $"SELECT id FROM matched{index}"))}})
+                    ORDER BY c.column_index LIMIT 3))
+            FROM hits h ORDER BY h.row_id
             """, ("$after", afterRowId),
             ("$root", rootId), ("$limit", pageSize + 1));
         for (var index = 0; index < normalized.Length; index++)
@@ -54,39 +74,48 @@ public sealed class SearchService(IndexDatabase database)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 rows.Add(new(reader.GetInt64(0), reader.GetString(1), reader.GetString(2), reader.GetInt32(3),
-                    reader.IsDBNull(5) ? "" : reader.GetString(5), "", reader.GetString(4) != "ready"));
+                    reader.IsDBNull(5) ? "" : reader.GetString(5), reader.IsDBNull(6) ? "" : reader.GetString(6), reader.GetString(4) != "ready"));
             }
         }
         catch (SqliteException) when (cancellationToken.IsCancellationRequested) { throw new OperationCanceledException(cancellationToken); }
         var hasMore = rows.Count > pageSize;
         if (hasMore) rows.RemoveAt(rows.Count - 1);
-        for (var index = 0; index < rows.Count; index++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var hit = rows[index];
-            var matching = GetCells(connection, hit.RowId).Where(cell => normalized.Any(target => TextStorage.Contains(cell.Text, target)));
-            var preview = string.Join("；", matching.Take(3).Select(cell => $"{cell.Address(hit.Row)} {TextStorage.Preview(cell.Text, 70)}"));
-            rows[index] = hit with { Preview = preview };
-        }
         return new(rows, hasMore);
     }
 
-    public IReadOnlyList<CellValue> GetCells(long rowId)
+    public IReadOnlyList<CellValue> GetCells(long rowId, IEnumerable<string>? targets = null)
     {
         using var connection = database.Open();
-        return GetCells(connection, rowId);
-    }
-
-    private static IReadOnlyList<CellValue> GetCells(SqliteConnection connection, long rowId)
-    {
+        var normalized = targets?.Where(target => !string.IsNullOrWhiteSpace(target))
+            .Select(TextStorage.Normalize).Distinct(StringComparer.Ordinal).ToArray();
+        var conditions = normalized?.Select((_, index) => $"""
+            (c.value_id IN (SELECT rowid FROM text_fts WHERE text_fts MATCH $query{index})
+                AND text_contains(v.payload,v.codec,$target{index}))
+            """).ToArray();
+        connection.CreateFunction<byte[], long, string, bool>("text_contains", (payload, codec, target) =>
+            TextStorage.Contains(TextStorage.Decode(payload, codec), target));
         using var command = IndexDatabase.Command(connection, null, """
             SELECT c.column_index,v.payload,v.codec,c.merge_first_row,c.merge_last_row,c.merge_last_column FROM cells c JOIN text_values v ON v.id=c.value_id
-            WHERE c.row_id=$row ORDER BY c.column_index
+            WHERE c.row_id=$row
             """, ("$row", rowId));
+        if (normalized is not null)
+        {
+            command.CommandText += " AND (" + (conditions!.Length == 0 ? "0" : string.Join(" OR ", conditions)) + ")";
+            for (var index = 0; index < normalized.Length; index++)
+            {
+                command.Parameters.AddWithValue($"$target{index}", normalized[index]);
+                command.Parameters.AddWithValue($"$query{index}", TextStorage.Tokens(normalized[index], true));
+            }
+        }
+        command.CommandText += " ORDER BY c.column_index";
         using var reader = command.ExecuteReader();
         var cells = new List<CellValue>();
         while (reader.Read()) cells.Add(new(reader.GetInt32(0), TextStorage.Decode((byte[])reader[1], reader.GetInt64(2)),
             reader.IsDBNull(3) ? null : reader.GetInt32(3), reader.IsDBNull(4) ? null : reader.GetInt32(4), reader.IsDBNull(5) ? null : reader.GetInt32(5)));
+        reader.Close();
+        if (cells.Count == 0 && Convert.ToInt64(IndexDatabase.Scalar(connection, null,
+                "SELECT EXISTS(SELECT 1 FROM rows WHERE id=$row)", ("$row", rowId))) == 0)
+            throw new InvalidOperationException("该搜索结果已更新或移除，请重新搜索。");
         return cells;
     }
 
