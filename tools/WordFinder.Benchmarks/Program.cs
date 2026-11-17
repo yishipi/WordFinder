@@ -6,13 +6,17 @@ using System.Xml;
 using WordFinder.Core;
 using WordFinder.Desktop;
 using WordFinder.Tests;
+using WordFinder.Benchmarks;
 
-if (args.Length < 2) throw new ArgumentException("generate-demo|generate-large|generate-many|generate-memory|run|query <path> ...");
+if (args.Length < 2) throw new ArgumentException("generate-demo|generate-large|generate-many|generate-memory|run|query|ui-regression <path> ...");
 var mode = args[0];
 var path = Path.GetFullPath(args[1]);
 if (mode.StartsWith("generate-", StringComparison.Ordinal)) Directory.CreateDirectory(path);
 switch (mode)
 {
+    case "ui-regression":
+        DesktopChecks.Run(path);
+        break;
     case "generate-demo":
         WorkbookFixture.Write(Path.Combine(path, "客户资料.xlsx"), new TestSheet("客户名单",
             [new(12, "B", "张三"), new(12, "F", "上海浦东"), new(12, "H", "123", "n", 1),

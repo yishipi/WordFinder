@@ -26,14 +26,17 @@
 ```powershell
 dotnet build WordFinder.sln -c Release
 dotnet test tests/WordFinder.Tests -c Release
+dotnet run --project tools/WordFinder.Benchmarks -c Release -- ui-regression artifacts/desktop-tests
 ./scripts/publish.ps1
 ```
 
 发布脚本输出 `artifacts/release/WordFinder.exe` 和 `SHA256SUMS.txt`。调试符号保存在发布中间目录，不需要分发。GitHub Actions 在推送 v 开头的版本标签时构建、测试并创建 Release。
 
+`ui-regression` 在独立目录生成测试工作簿和索引，通过真实消息循环检查连续翻页、取消、空结果、清空搜索和查询中关闭窗口，并启用跨线程访问检查，不使用日常索引。运行成功会输出 `Passed: true`；操作步骤及此次绘制异常的定位见 [桌面回归说明](docs/desktop-regression.md)。
+
 ## 验证和边界
 
-16项集成测试通过，覆盖真实行列、同行组合、合并单元格、文件监听、中文和符号、隐藏内容、公式缓存、源文件只读、增量删除、失败重试、分类重叠、分页及取消恢复。此前版本已测试一万个合成小文件、500 MiB 合成工作表和内存受限恢复，详见 [实现与验证报告](docs/implementation-and-validation.md)。
+20项集成测试通过，覆盖真实行列、同行组合、合并单元格、文件监听、中文和符号、隐藏内容、公式缓存、源文件只读、增量删除、失败重试、分类重叠、分页、并发更新及取消恢复。此前版本已测试一万个合成小文件、500 MiB 合成工作表和内存受限恢复，详见 [实现与验证报告](docs/implementation-and-validation.md)。
 
 当前验证主机为 Windows 11 x64，**Windows 10 实机、无预装运行时的干净系统、实际办公文件集和杀毒软件验收仍待完成**。ExcelDataReader 可能缓存共享字符串表，大文件在低额度下可能失败；可提高额度重试。合成数据的耗时和索引比例不代表真实数据承诺。
 
@@ -44,8 +47,9 @@ dotnet test tests/WordFinder.Tests -c Release
 - [需求与技术选型，包括 ExcelDataReader 与 calamine 比较](docs/requirements-and-architecture.md)
 - [使用说明](docs/quick-start.md)
 - [实现与验证](docs/implementation-and-validation.md)
+- [桌面回归与绘制异常记录](docs/desktop-regression.md)
 - [第三方组件许可](THIRD-PARTY-NOTICES.md)，完整文本也内嵌在程序使用说明中。
 - `src/WordFinder.Core`：读取、索引、查询、数据管理。
 - `src/WordFinder.Desktop`：中文 UI、独立工作进程、资源限制、更新检查。
 - `tests/WordFinder.Tests`：真实 SQLite 和生成工作簿的集成测试。
-- `tools/WordFinder.Benchmarks`：可重现的样本生成、工作进程基准与查询工具。
+- `tools/WordFinder.Benchmarks`：样本生成、工作进程基准、查询工具及桌面回归检查。
